@@ -1,42 +1,61 @@
+import queue
+import json
 import numpy as np
 import sounddevice as sd
-from openwakeword.model import Model
+from scipy.signal import resample
+from vosk import Model, KaldiRecognizer, SetLogLevel
 
-def wait_for_wake_word(wake_word="ok google", threshold=0.5):
-    """
-    Block until OpenWakeWord detects the configured wake word.
-    
-    Args:
-        wake_word: Wake word to listen for. Built-in options include:
-                   "ok google", "hey google", "hey siri", "alexa", "hey cortana"
-        threshold: Detection confidence threshold (0.0-1.0)
-    """
-    model = Model(model_path="tiny" if wake_word != "ok google" else None)
-    
-    print(f"Listening for wake word: '{wake_word}'")
-    
-    # OpenWakeWord expects 16kHz mono audio
-    samplerate = 16000
-    frame_length = 1280  # ~80ms chunk
-    
-    try:
-        with sd.RawInputStream(
-            samplerate=samplerate,
-            blocksize=frame_length,
-            dtype="int16",
-            channels=1,
-        ) as stream:
-            while True:
-                pcm, overflowed = stream.read(frame_length)
-                if overflowed:
-                    continue
+SetLogLevel(-1)
 
-                pcm_frame = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-                prediction = model.predict(pcm_frame, threshold=threshold)
-                
-                # prediction is a dict: {"ok google": 0.95, ...}
-                if prediction.get(wake_word, 0) > threshold:
+def wait_for_wake_word_vosk(wake_word="ok google"):
+    """
+    Wake word detection using Vosk (speech-to-text based)
+    """
+    q = queue.Queue()
+
+    def callback(indata, frames, time, status):
+        if status:
+            print(status)
+        q.put(bytes(indata))
+
+    model = Model("vosk-model-small-en-us-0.15")
+
+    input_samplerate = 44100
+    recognizer_samplerate = 16000
+    recognizer = KaldiRecognizer(model, recognizer_samplerate)
+
+    print(
+        f"🎤 Listening for wake word: '{wake_word}' "
+    )
+
+    with sd.RawInputStream(
+        samplerate=input_samplerate,
+        blocksize=8000,
+        dtype="int16",
+        channels=1,
+        callback=callback
+    ):
+        while True:
+            data = q.get()
+            pcm_44k = np.frombuffer(data, dtype=np.int16)
+            if pcm_44k.size == 0:
+                continue
+
+            target_length = int(pcm_44k.size * recognizer_samplerate / input_samplerate)
+            if target_length <= 0:
+                continue
+
+            pcm_16k = resample(pcm_44k, target_length)
+            pcm_16k = np.clip(np.rint(pcm_16k), -32768, 32767).astype(np.int16)
+            resampled_bytes = pcm_16k.tobytes()
+
+            if recognizer.AcceptWaveform(resampled_bytes):
+                result = json.loads(recognizer.Result())
+                text = result.get("text", "").lower()
+
+                if text:
+                    print("📝 Heard:", text)
+
+                if wake_word in text:
                     print(f"✨ Wake word detected: '{wake_word}'")
                     return wake_word
-    finally:
-        model = None
