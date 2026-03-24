@@ -1,11 +1,16 @@
 import sounddevice as sd
-from faster_whisper import WhisperModel
+from scipy.signal import resample
 from dotenv import load_dotenv
 import os
 
 
 load_dotenv()
 _hf_token = os.getenv("HF_TOKEN")
+os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN")
+
+#Load token before importing faster_whisper to avoid issues with Hugging Face authentication
+from faster_whisper import WhisperModel
+
 _model = None
 _language = "en"
 
@@ -17,7 +22,8 @@ def get_model(model_size="base", device="cpu", compute_type="int8"):
     return _model
 
 
-def record_audio(duration=5, samplerate=16000):
+def record_audio(duration=5, samplerate=44100):
+    target_sr = 16000
     print("🎤 Recording...")
     audio = sd.rec(
         int(samplerate * duration),
@@ -26,7 +32,14 @@ def record_audio(duration=5, samplerate=16000):
         dtype="float32",
     )
     sd.wait()
-    return audio.flatten()
+    audio = audio.flatten()
+
+    # Resample
+    if samplerate != target_sr:
+        print("🔄 Resampling...")
+        num_samples = int(len(audio) * target_sr / samplerate)
+        audio = resample(audio, num_samples)
+    return audio
 
 
 def transcribe_audio(audio, language=_language, beam_size=5):
@@ -40,6 +53,6 @@ def transcribe_audio(audio, language=_language, beam_size=5):
     return texts
 
 
-def transcribe_from_mic(duration=5, samplerate=16000, language=_language, beam_size=5):
+def transcribe_from_mic(duration=5, samplerate=44100, language=_language, beam_size=5):
     audio = record_audio(duration=duration, samplerate=samplerate)
     return transcribe_audio(audio, language=language, beam_size=beam_size)
